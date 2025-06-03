@@ -1,43 +1,36 @@
-
+# bam_module.py
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class ChannelAttention(nn.Module):
-    def __init__(self, in_planes, ratio=16):
-        super(ChannelAttention, self).__init__()
-        self.avg_pool = nn.AdaptiveAvgPool2d(1)
-        self.max_pool = nn.AdaptiveMaxPool2d(1)
+class BAM(nn.Module):
+    def __init__(self, in_channels, reduction_ratio=16, dilation=4):
+        super(BAM, self).__init__()
 
-        self.fc = nn.Sequential(
-            nn.Conv2d(in_planes, in_planes // ratio, 1, bias=False),
+        # Channel attention
+        self.channel_att = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(in_channels, in_channels // reduction_ratio, 1, bias=False),
             nn.ReLU(),
-            nn.Conv2d(in_planes // ratio, in_planes, 1, bias=False)
+            nn.Conv2d(in_channels // reduction_ratio, in_channels, 1, bias=False)
         )
 
-    def forward(self, x):
-        avg_out = self.fc(self.avg_pool(x))
-        max_out = self.fc(self.max_pool(x))
-        return torch.sigmoid(avg_out + max_out)
+        # Spatial attention
+        self.spatial_att = nn.Sequential(
+            nn.Conv2d(in_channels, in_channels // reduction_ratio, kernel_size=1),
+            nn.BatchNorm2d(in_channels // reduction_ratio),
+            nn.ReLU(),
+            nn.Conv2d(in_channels // reduction_ratio, in_channels // reduction_ratio, kernel_size=3,
+                      padding=dilation, dilation=dilation),
+            nn.BatchNorm2d(in_channels // reduction_ratio),
+            nn.ReLU(),
+            nn.Conv2d(in_channels // reduction_ratio, 1, kernel_size=1)
+        )
 
-class SpatialAttention(nn.Module):
-    def __init__(self):
-        super(SpatialAttention, self).__init__()
-        self.conv = nn.Conv2d(2, 1, kernel_size=7, padding=3, bias=False)
-
-    def forward(self, x):
-        avg_out = torch.mean(x, dim=1, keepdim=True)
-        max_out, _ = torch.max(x, dim=1, keepdim=True)
-        x = torch.cat([avg_out, max_out], dim=1)
-        return torch.sigmoid(self.conv(x))
-
-class BAM(nn.Module):
-    def __init__(self, in_planes):
-        super(BAM, self).__init__()
-        self.channel_attention = ChannelAttention(in_planes)
-        self.spatial_attention = SpatialAttention()
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
-        x_out = self.channel_attention(x) * x
-        x_out = self.spatial_attention(x_out) * x_out
-        return x_out
+        ch_att = self.channel_att(x)
+        sp_att = self.spatial_att(x)
+        att = self.sigmoid(ch_att * sp_att)
+        return x * att
